@@ -82,9 +82,9 @@ Note in the following section that 1023 (VLQ-encoded as 0x83FF) is the maximum n
 | name          | length   | value  | description |
 |---------------|----------|---------------|-------------|
 | types_section | variable | n/a           | stores code section metadata |
-| inputs        | VLQ | 0x00-0x83FF | number of stack elements the code section consumes |
+| inputs        | VLQ | 0x00-variable | number of stack elements the code section consumes (restricted by EVM maximum stack size) |
 | outputs       | 1 byte | 0x00-0x7F | number of stack elements the code section returns or 0x7F for non-returning functions |
-| max_stack_height | VLQ | 0x00-0x83FF | maximum number of elements ever placed onto the stack by the code section |
+| max_stack_height | VLQ | 0x00-variable | maximum number of elements ever placed onto the stack by the code section (restricted by EVM maximum stack size) |
 | code_section  | variable | n/a           | arbitrary sequence of bytes |
 | container_section | variable | n/a       | arbitrary sequence of bytes |
 | data_section  | variable | n/a           | arbitrary sequence of bytes |
