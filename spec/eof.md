@@ -30,32 +30,61 @@ types_section := (inputs, outputs, max_stack_height)+
 
 _note: `,` is a concatenation operator, `+` should be interpreted as "one or more" of the preceding item, and `*` should be interpreted as "zero or more" of the preceding item._
 
+### VLQ
+
+In this document, many length quantities are encoded with VLQ encoding (https://en.wikipedia.org/wiki/Variable-length_quantity). The flavor of VLQ encoding used is as follows:
+
+- The high bit indicates the continuation bit.
+- Integers are encoded big-endian.
+- "Empty" bytes, e.g. `0x8000` are disallowed by. This is allowed in most VLQ specs/implementations, but is disallowed here to prevent encoding ambiguity.
+- Signed integers are encoded in two's complement big-endian. The input is sign-extended so that the length is a multiple of 7 bits, then encoding proceeds as normal. These will be referred to in this document as VLQ signed integers.
+- The maximum integer allowed is `0xFFFFFFFFFFFFFFFF` (`2**64 -1`). This allows encoders to use the native word size to store deserialized VLQs on 64-bit architectures.
+
+Here are a couple examples (spaces added for clarity).
+
+##### Unsigned VLQs
+
+- 0 is encoded as 0x00
+- 127 is encoded as 0x7F
+- 128 is encoded as 0x81 00
+- 256 is encoded as 0x81 FF
+- 16384 is encoded as 0x81 80 00
+
+##### Signed VLQs
+- -1 is encoded as 0x7F
+- 127 is encoded as 0x81 00
+- 128 is encoded as 0x81 01
+- -127 is encoded as 0x8F FF(check me!)
+- -128 is encoded as 0x81 8F FF(check me!)
+
 #### Header
 
 | name              | length   | value  | description |
 |-------------------|----------|---------------|-------------|
 | magic             | 2 bytes  | 0xEF00        | EOF prefix  |
-| version           | 1 byte   | 0x01          | EOF version |
+| version           | VLQ      | 0x01          | EOF version |
 | kind_types        | 1 byte   | 0x01          | kind marker for types size section |
-| types_size        | 2 bytes  | 0x0004-0xFFFF | 16-bit unsigned big-endian integer denoting the length of the type section content |
+| types_size        | VLQ      | 0x04-variable | VLQ unsigned big-endian integer denoting the length of the type section content |
 | kind_code         | 1 byte   | 0x02          | kind marker for code size section |
-| num_code_sections | 2 bytes  | 0x0001-0xFFFF | 16-bit unsigned big-endian integer denoting the number of the code sections |
-| code_size         | 2 bytes  | 0x0001-0xFFFF | 16-bit unsigned big-endian integer denoting the length of the code section content |
+| num_code_sections | VLQ      | 0x01-variable | VLQ unsigned big-endian integer denoting the number of the code sections |
+| code_size         | VLQ      | 0x01-variable | VLQ unsigned big-endian integer denoting the length of the code section content |
 | kind_container    | 1 byte   | 0x03          | kind marker for container size section |
-| num_container_sections | 2 bytes  | 0x0001-0x00FF | 16-bit unsigned big-endian integer denoting the number of the container sections |
-| container_size    | 2 bytes  | 0x0001-0xFFFF | 16-bit unsigned big-endian integer denoting the length of the container section content |
+| num_container_sections | VLQ | 0x01-variable | VLQ unsigned big-endian integer denoting the number of the container sections |
+| container_size    | VLQ | 0x01-variable | VLQ unsigned big-endian integer denoting the length of the container section content |
 | kind_data         | 1 byte   | 0x04          | kind marker for data size section |
-| data_size         | 2 bytes  | 0x0000-0xFFFF | 16-bit unsigned big-endian integer denoting the length of the static data section content (see [Data Section Lifecycle](#data-section-lifecycle) on how to interpret this field)|
+| data_size         | VLQ | 0x00-variable | VLQ unsigned big-endian integer denoting the length of the static data section content (see [Data Section Lifecycle](#data-section-lifecycle) on how to interpret this field)|
 | terminator        | 1 byte   | 0x00          | marks the end of the header |
 
 #### Body
 
+Note in the following section that 1023 (VLQ-encoded as 0x83FF) is the maximum number of elements on the stack allowed by the EVM.
+
 | name          | length   | value  | description |
 |---------------|----------|---------------|-------------|
 | types_section | variable | n/a           | stores code section metadata |
-| inputs        | 1 byte | 0x00-0x7F       | number of stack elements the code section consumes |
-| outputs       | 1 byte | 0x00-0x80       | number of stack elements the code section returns or 0x80 for non-returning functions |
-| max_stack_height | 2 bytes | 0x0000-0x03FF | maximum number of elements ever placed onto the stack by the code section |
+| inputs        | VLQ | 0x00-0x83FF | number of stack elements the code section consumes |
+| outputs       | 1 byte | 0x00-0x7F | number of stack elements the code section returns or 0x7F for non-returning functions |
+| max_stack_height | VLQ | 0x00-0x83FF | maximum number of elements ever placed onto the stack by the code section |
 | code_section  | variable | n/a           | arbitrary sequence of bytes |
 | container_section | variable | n/a       | arbitrary sequence of bytes |
 | data_section  | variable | n/a           | arbitrary sequence of bytes |
@@ -168,26 +197,27 @@ Code executing within an EOF environment will behave differently than legacy cod
 
 - `RJUMP (0xe0)` instruction
     - deduct 2 gas
-    - read int16 operand `offset`, set `pc = offset + pc + 3`
+    - read signed VLQ operand `offset`, set `pc = offset + pc + 3`
 - `RJUMPI (0xe1)` instruction
     - deduct 4 gas
     - pop one value, `condition` from stack
     - set `pc += 3`
-    - if `condition != 0`, read int16 operand `offset` and set `pc += offset`
+    - if `condition != 0`, read signed VLQ operand `offset` and set `pc += offset`
 - `RJUMPV (0xe2)` instruction
     - deduct 4 gas
-    - read uint8 operand `max_index`
+    - read unsigned VLQ operand `max_index`
     - pop one value, `case` from stack
     - set `pc += 2`
     - if `case > max_index` (out-of-bounds case), fall through and set `pc += (max_index + 1) * 2`
-    - otherwise interpret 2 byte operand at `pc + case * 2` as int16, call it `offset`, and set `pc += (max_index + 1) * 2 + offset`
+    - otherwise interpret VLQ signed integer operand at `pc + case * 2`, call it `offset`, and set `pc += (max_index + 1) * 2 + offset`
+    - (note that all the entries in the jump table have variable length, so the jump table as a whole itself has variable length, which can only be determined by parsing all the entries in the jump table)
 - introduce new vm context variables
     - `current_code_idx` which stores the actively executing code section index
     - new `return_stack` which stores the pairs `(code_section`, `pc`)`.
         - when instantiating a vm context, push an initial value to the *return stack* of `(0,0)`
 - `CALLF (0xe3)` instruction
     - deduct 5 gas
-    - read uint16 operand `idx`
+    - read unsigned VLQ operand `idx`
     - if `1024 < len(stack) + types[idx].max_stack_height - types[idx].inputs`, execution results in an exceptional halt
     - if `1024 <= len(return_stack)`, execution results in an exceptional halt
     - push new element to `return_stack` `(current_code_idx, pc+3)`
@@ -197,18 +227,18 @@ Code executing within an EOF environment will behave differently than legacy cod
     - pops `val` from `return_stack` and sets `current_code_idx` to `val.code_section` and `pc` to `val.pc`
 - `JUMPF (0xe5)` instruction
     - deduct 5 gas
-    - read uint16 operand `idx`
+    - read unsigned VLQ operand `idx`
     - if `1024 < len(stack) + types[idx].max_stack_height - types[idx].inputs`, execution results in an exceptional halt
     - set `current_code_idx` to `idx`
     - set `pc = 0`
 - `CREATE3 (0xec)` instruction
     - deduct `32000` gas
-    - read uint8 operand `initcontainer_index`
+    - read unsigned VLQ operand `initcontainer_index`
     - pops `value`, `salt`, `data_offset`, `data_size` from the stack
     - load initcode EOF subcontainer at `initcontainer_index` in the container from which `CREATE3` is executed
     - deduct `6 * ((initcontainer_size + 31) // 32)` gas (hashing charge)
     - execute the container in "initcode-mode" and deduct gas for execution
-        - calculate `new_address` as `keccak256(0xff || sender || salt || keccak256(initcontainer))[12:]`
+        - calculate `new_address` as `keccak256(0xFF || sender || salt || keccak256(initcontainer))[12:]`
         - an unsuccesful execution of initcode results in pushing `0` onto the stack
             - can populate returndata if execution `REVERT`ed
         - a successful execution ends with initcode executing `RETURNCONTRACT{deploy_container_index}(aux_data_offset, aux_data_size)` instruction (see below). After that:
@@ -232,7 +262,7 @@ Code executing within an EOF environment will behave differently than legacy cod
             - fails (returns 0 on the stack) if any of those was invalid
                 - caller’s nonce is not updated and gas for initcode execution is not consumed. Only `CREATE4` constant and EIP-3860 gas were consumed
 - `RETURNCONTRACT (0xee)` instruction
-    - loads `uint8` immediate `deploy_container_index`
+    - loads unsigned VLQ immediate `deploy_container_index`
     - pops two values from the stack: `aux_data_offset`, `aux_data_size` referring to memory section that will be appended to deployed container's data
     - cost 0 gas + possible memory expansion for aux data
     - ends initcode frame execution and returns control to CREATE3/4 caller frame where `deploy_container_index` and `aux_data` are used to construct deployed contract (see above)
@@ -245,7 +275,7 @@ Code executing within an EOF environment will behave differently than legacy cod
     - pad with 0s if reading out of data bounds
 - `DATALOADN (0xe9)` instruction
     - deduct 2 gas
-    - like `DATALOAD`, but takes the offset as a 16-bit immediate value and not from the stack
+    - like `DATALOAD`, but takes the offset as an unsigned VLQ immediate value and not from the stack
 - `DATASIZE (0xea)` instruction
     - deduct 2 gas
     - push the size of the data section of the active container to the stack
@@ -258,20 +288,20 @@ Code executing within an EOF environment will behave differently than legacy cod
     - pad with 0s if reading out of data bounds
 - `DUPN (0xe6)` instruction
     - deduct 3 gas
-    - read uint8 operand `imm`
+    - read unsigned VLQ operand `imm`
     - `n = imm + 1`
     - `n`‘th (1-based) stack item is duplicated at the top of the stack
     - Stack validation: `stack_height >= n`
 - `SWAPN (0xe7)` instruction
     - deduct 3 gas
-    - read uint8 operand `imm`
+    - read unsigned VLQ operand `imm`
     - `n = imm + 1`
     - `n + 1`th stack item is swapped with the top stack item (1-based).
     - Stack validation: `stack_height >= n + 1`
 - `EXCHANGE (0xe8)` instruction
     - deduct 3 gas
-    - read uint8 operand `imm`
-    - `n = imm >> 4 + 1`, `m = imm & 0x0F + 1`
+    - read unsigned VLQ operand `imm`
+    - `n = imm >> 4 + 1`, `m = imm & 15 + 1`
     - `n`th stack item is swapped with `n + m`th stack item (1-based).
     - Stack validation: `stack_height >= n + m`
 - `RETURNDATALOAD (0xf7)` instruction
@@ -289,7 +319,7 @@ Code executing within an EOF environment will behave differently than legacy cod
 - `CALLF` and `JUMPF` operand may not exceed `num_code_sections`
 - `CALLF` operand must not point to to a section with `0x80` as outputs (non-returning)
 - `JUMPF` operand must point to a code section with equal or fewer number of outputs as the section in which it resides, or to a section with `0x80` as outputs (non-returning)
-- no section may have more than 127 inputs or outputs
+- no section may have more than 127 outputs
 - section type is required to have `0x80` as outputs value, which marks it as non-returning, in case this section contains neither `RETF` instructions nor `JUMPF` into returning (`outputs <= 0x7f`) sections.
     - I.e. section having only `JUMPF`s to non-returning sections is non-returning itself.
 - the first code section must have a type signature `(0, 0x80, max_stack_height)` (0 inputs non-returning function)
