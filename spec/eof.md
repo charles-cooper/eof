@@ -17,7 +17,7 @@ EVM bytecode is traditionally an unstructured sequence of instructions. EOF intr
 
 ```
 container := header, body
-header := 
+header :=
     magic, version, 
     kind_types, types_size, 
     kind_code, num_code_sections, code_size+,
@@ -34,11 +34,12 @@ _note: `,` is a concatenation operator, `+` should be interpreted as "one or mor
 
 In this document, many length quantities are encoded with VLQ encoding (https://en.wikipedia.org/wiki/Variable-length_quantity). The flavor of VLQ encoding used is as follows:
 
+- VLQ_N refers to the maximum number of bits required for this quantity, which allows implementations to set bounds on those values. For instance, VLQ_32 is a variable-length quantity whose maximum value allowed is `2**32 - 1`.
 - The high bit indicates the continuation bit.
 - Integers are encoded big-endian.
 - "Empty" bytes, e.g. `0x8000` are disallowed. This is allowed in most VLQ specs/implementations, but is disallowed here to prevent encoding ambiguity.
 - Signed integers are encoded in two's complement big-endian. The input is sign-extended so that the length is a multiple of 7 bits, then encoding proceeds as normal. These will be referred to in this document as VLQ signed integers.
-- The maximum integer allowed is `0xFFFFFFFFFFFFFFFF` (`2**64 -1`). This allows encoders to use the native word size to store deserialized VLQs on 64-bit architectures.
+- In this document, the default maximum integer allowed is `2**64 -1`. That is, VLQ defaults to VLQ_64. This allows encoders to use the native word size to store deserialized VLQs on 64-bit architectures.
 
 Here are a couple examples (spaces added for clarity).
 
@@ -62,17 +63,17 @@ Here are a couple examples (spaces added for clarity).
 | name              | length   | value  | description |
 |-------------------|----------|---------------|-------------|
 | magic             | 2 bytes  | 0xEF00        | EOF prefix  |
-| version           | VLQ      | 0x01          | EOF version |
+| version           | VLQ_16   | 0x01          | EOF version |
 | kind_types        | 1 byte   | 0x01          | kind marker for types size section |
-| types_size        | VLQ      | 0x04-variable | VLQ unsigned big-endian integer denoting the length of the type section content |
+| types_size        | VLQ_16   | 0x04-variable | VLQ unsigned big-endian integer denoting the length of the type section content |
 | kind_code         | 1 byte   | 0x02          | kind marker for code size section |
-| num_code_sections | VLQ      | 0x01-variable | VLQ unsigned big-endian integer denoting the number of the code sections |
-| code_size         | VLQ      | 0x01-variable | VLQ unsigned big-endian integer denoting the length of the code section content |
+| num_code_sections | VLQ_16   | 0x01-variable | VLQ unsigned big-endian integer denoting the number of the code sections |
+| code_size         | VLQ_16   | 0x01-variable | VLQ unsigned big-endian integer denoting the length of the code section content |
 | kind_container    | 1 byte   | 0x03          | kind marker for container size section |
-| num_container_sections | VLQ | 0x01-variable | VLQ unsigned big-endian integer denoting the number of the container sections |
-| container_size    | VLQ | 0x01-variable | VLQ unsigned big-endian integer denoting the length of the container section content |
+| num_container_sections | VLQ_16 | 0x01-variable | VLQ unsigned big-endian integer denoting the number of the container sections |
+| container_size    | VLQ_16   | 0x01-variable | VLQ unsigned big-endian integer denoting the length of the container section content |
 | kind_data         | 1 byte   | 0x04          | kind marker for data size section |
-| data_size         | VLQ | 0x00-variable | VLQ unsigned big-endian integer denoting the length of the static data section content (see [Data Section Lifecycle](#data-section-lifecycle) on how to interpret this field)|
+| data_size         | VLQ_16   | 0x00-variable | VLQ unsigned big-endian integer denoting the length of the static data section content (see [Data Section Lifecycle](#data-section-lifecycle) on how to interpret this field)|
 | terminator        | 1 byte   | 0x00          | marks the end of the header |
 
 #### Body
@@ -82,9 +83,9 @@ Note in the following section that 1023 (VLQ-encoded as 0x83FF) is the maximum n
 | name          | length   | value  | description |
 |---------------|----------|---------------|-------------|
 | types_section | variable | n/a           | stores code section metadata |
-| inputs        | VLQ | 0x00-variable | number of stack elements the code section consumes (restricted by EVM maximum stack size) |
-| outputs       | 1 byte | 0x00-0x7F | number of stack elements the code section returns or 0x7F for non-returning functions |
-| max_stack_height | VLQ | 0x00-variable | maximum number of elements ever placed onto the stack by the code section (restricted by EVM maximum stack size) |
+| inputs        | VLQ_16   | 0x00-variable | number of stack elements the code section consumes (restricted by EVM maximum stack size) |
+| outputs       | VLQ_16   | 0x00-variable | number of stack elements the code section returns. for non-returning functions, this should be set to `max_stack_height + 1`
+| max_stack_height | VLQ_16 | 0x00-variable | maximum number of elements ever placed onto the stack by the code section (restricted by EVM maximum stack size) |
 | code_section  | variable | n/a           | arbitrary sequence of bytes |
 | container_section | variable | n/a       | arbitrary sequence of bytes |
 | data_section  | variable | n/a           | arbitrary sequence of bytes |
@@ -123,10 +124,8 @@ This impacts the validation and behavior of data-section-accessing instructions:
 
 The following validity constraints are placed on the container format:
 
-- minimum valid header size is `15` bytes
+- minimum valid header size is `14` bytes
 - `version` must be `0x01`
-- `types_size` is divisible by `4`
-- the number of code sections must be equal to `types_size / 4`
 - the number of code sections must not exceed 1024
 - `code_size` may not be 0
 - the number of container sections must not exceed 256
@@ -211,6 +210,7 @@ Code executing within an EOF environment will behave differently than legacy cod
     - if `case > max_index` (out-of-bounds case), fall through and set `pc += (max_index + 1) * 2`
     - otherwise interpret VLQ signed integer immediate at `pc + case * 2`, call it `offset`, and set `pc += (max_index + 1) * 2 + offset`
     - (note that all the entries in the jump table have variable length, so the jump table as a whole itself has variable length, which can only be determined by parsing all the entries in the jump table)
+    - XXX: this may cause an issue for verkle trees, because traversing the entire jumptable (O(N) as opposed to O(1)) can be expensive.
 - introduce new vm context variables
     - `current_code_idx` which stores the actively executing code section index
     - new `return_stack` which stores the pairs `(code_section`, `pc`)`.
@@ -290,8 +290,9 @@ Code executing within an EOF environment will behave differently than legacy cod
     - deduct 3 gas
     - read unsigned VLQ immediate `imm`
     - `n = imm + 1`
-    - `n`‘th (1-based) stack item is duplicated at the top of the stack
+    - `n`'th (1-based) stack item is duplicated at the top of the stack
     - Stack validation: `stack_height >= n`
+- XXX: SWAPN and EXCHANGE can probably be coalesced into a single instruction with a VLQ immediate.
 - `SWAPN (0xe7)` instruction
     - deduct 3 gas
     - read unsigned VLQ immediate `imm`
@@ -315,14 +316,13 @@ Code executing within an EOF environment will behave differently than legacy cod
 - no unassigned instructions used
 - instructions with immediate operands must not be truncated at the end of a code section
 - `RJUMP` / `RJUMPI` / `RJUMPV` destinations must not point to an immediate operand and may not point outside of code bounds
-- `RJUMPV` `count` cannot be zero
+- `RJUMPV` `max_index` cannot be zero
 - `CALLF` and `JUMPF` operand may not exceed `num_code_sections`
-- `CALLF` operand must not point to to a section with `0x80` as outputs (non-returning)
-- `JUMPF` operand must point to a code section with equal or fewer number of outputs as the section in which it resides, or to a section with `0x80` as outputs (non-returning)
-- no section may have more than 127 outputs
-- section type is required to have `0x80` as outputs value, which marks it as non-returning, in case this section contains neither `RETF` instructions nor `JUMPF` into returning (`outputs <= 0x7f`) sections.
-    - I.e. section having only `JUMPF`s to non-returning sections is non-returning itself.
-- the first code section must have a type signature `(0, 0x80, max_stack_height)` (0 inputs non-returning function)
+- `CALLF` operand must not point to to a non-returning code section
+- `JUMPF` operand must point to a code section with equal or fewer number of outputs as the section in which it resides, or to a non-returning section
+- in case this section contains neither `RETF` instructions nor `JUMPF` into returning sections, it is required to be marked as non-returning.
+    - i.e. section having only `JUMPF`s to non-returning sections is non-returning itself.
+- the first code section must have a type signature `(0, max_stack_height + 1, max_stack_height)` (`max_stack_height + 1` indicates non-returning function)
 - `CREATE3` `initcontainer_index` must be less than `num_container_sections`
 - `RETURNCONTRACT` `deploy_container_index` must be less than `num_container_sections`
 - `DATALOADN`'s `immediate + 32` must be within `pre_deploy_data_size` (see [Data Section Lifecycle](#data-section-lifecycle))
