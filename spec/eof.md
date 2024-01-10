@@ -36,7 +36,7 @@ In this document, many length quantities are encoded with VLQ encoding (https://
 
 - The high bit indicates the continuation bit.
 - Integers are encoded big-endian.
-- "Empty" bytes, e.g. `0x8000` are disallowed by. This is allowed in most VLQ specs/implementations, but is disallowed here to prevent encoding ambiguity.
+- "Empty" bytes, e.g. `0x8000` are disallowed. This is allowed in most VLQ specs/implementations, but is disallowed here to prevent encoding ambiguity.
 - Signed integers are encoded in two's complement big-endian. The input is sign-extended so that the length is a multiple of 7 bits, then encoding proceeds as normal. These will be referred to in this document as VLQ signed integers.
 - The maximum integer allowed is `0xFFFFFFFFFFFFFFFF` (`2**64 -1`). This allows encoders to use the native word size to store deserialized VLQs on 64-bit architectures.
 
