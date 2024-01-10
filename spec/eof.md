@@ -197,19 +197,19 @@ Code executing within an EOF environment will behave differently than legacy cod
 
 - `RJUMP (0xe0)` instruction
     - deduct 2 gas
-    - read signed VLQ operand `offset`, set `pc = offset + pc + 3`
+    - read signed VLQ immediate `offset`, set `pc = offset + pc + 3`
 - `RJUMPI (0xe1)` instruction
     - deduct 4 gas
     - pop one value, `condition` from stack
     - set `pc += 3`
-    - if `condition != 0`, read signed VLQ operand `offset` and set `pc += offset`
+    - if `condition != 0`, read signed VLQ immediate `offset` and set `pc += offset`
 - `RJUMPV (0xe2)` instruction
     - deduct 4 gas
-    - read unsigned VLQ operand `max_index`
+    - read unsigned VLQ immediate `max_index`
     - pop one value, `case` from stack
     - set `pc += 2`
     - if `case > max_index` (out-of-bounds case), fall through and set `pc += (max_index + 1) * 2`
-    - otherwise interpret VLQ signed integer operand at `pc + case * 2`, call it `offset`, and set `pc += (max_index + 1) * 2 + offset`
+    - otherwise interpret VLQ signed integer immediate at `pc + case * 2`, call it `offset`, and set `pc += (max_index + 1) * 2 + offset`
     - (note that all the entries in the jump table have variable length, so the jump table as a whole itself has variable length, which can only be determined by parsing all the entries in the jump table)
 - introduce new vm context variables
     - `current_code_idx` which stores the actively executing code section index
@@ -217,7 +217,7 @@ Code executing within an EOF environment will behave differently than legacy cod
         - when instantiating a vm context, push an initial value to the *return stack* of `(0,0)`
 - `CALLF (0xe3)` instruction
     - deduct 5 gas
-    - read unsigned VLQ operand `idx`
+    - read unsigned VLQ immediate `idx`
     - if `1024 < len(stack) + types[idx].max_stack_height - types[idx].inputs`, execution results in an exceptional halt
     - if `1024 <= len(return_stack)`, execution results in an exceptional halt
     - push new element to `return_stack` `(current_code_idx, pc+3)`
@@ -227,13 +227,13 @@ Code executing within an EOF environment will behave differently than legacy cod
     - pops `val` from `return_stack` and sets `current_code_idx` to `val.code_section` and `pc` to `val.pc`
 - `JUMPF (0xe5)` instruction
     - deduct 5 gas
-    - read unsigned VLQ operand `idx`
+    - read unsigned VLQ immediate `idx`
     - if `1024 < len(stack) + types[idx].max_stack_height - types[idx].inputs`, execution results in an exceptional halt
     - set `current_code_idx` to `idx`
     - set `pc = 0`
 - `CREATE3 (0xec)` instruction
     - deduct `32000` gas
-    - read unsigned VLQ operand `initcontainer_index`
+    - read unsigned VLQ immediate `initcontainer_index`
     - pops `value`, `salt`, `data_offset`, `data_size` from the stack
     - load initcode EOF subcontainer at `initcontainer_index` in the container from which `CREATE3` is executed
     - deduct `6 * ((initcontainer_size + 31) // 32)` gas (hashing charge)
@@ -288,19 +288,19 @@ Code executing within an EOF environment will behave differently than legacy cod
     - pad with 0s if reading out of data bounds
 - `DUPN (0xe6)` instruction
     - deduct 3 gas
-    - read unsigned VLQ operand `imm`
+    - read unsigned VLQ immediate `imm`
     - `n = imm + 1`
     - `n`‘th (1-based) stack item is duplicated at the top of the stack
     - Stack validation: `stack_height >= n`
 - `SWAPN (0xe7)` instruction
     - deduct 3 gas
-    - read unsigned VLQ operand `imm`
+    - read unsigned VLQ immediate `imm`
     - `n = imm + 1`
     - `n + 1`th stack item is swapped with the top stack item (1-based).
     - Stack validation: `stack_height >= n + 1`
 - `EXCHANGE (0xe8)` instruction
     - deduct 3 gas
-    - read unsigned VLQ operand `imm`
+    - read unsigned VLQ immediate `imm`
     - `n = imm >> 4 + 1`, `m = imm & 15 + 1`
     - `n`th stack item is swapped with `n + m`th stack item (1-based).
     - Stack validation: `stack_height >= n + m`
@@ -314,7 +314,7 @@ Code executing within an EOF environment will behave differently than legacy cod
 
 - no unassigned instructions used
 - instructions with immediate operands must not be truncated at the end of a code section
-- `RJUMP` / `RJUMPI` / `RJUMPV` operands must not point to an immediate operand and may not point outside of code bounds
+- `RJUMP` / `RJUMPI` / `RJUMPV` destinations must not point to an immediate operand and may not point outside of code bounds
 - `RJUMPV` `count` cannot be zero
 - `CALLF` and `JUMPF` operand may not exceed `num_code_sections`
 - `CALLF` operand must not point to to a section with `0x80` as outputs (non-returning)
